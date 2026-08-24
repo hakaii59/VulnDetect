@@ -1,0 +1,24 @@
+# Reference repo kept only for ideas -- not part of this project's history
+GraphCodeBERT-VulnDetector/
+
+# Raw/processed datasets (large, downloaded per docs/DATASETS.md)
+data/raw/*/*
+!data/raw/*/.gitkeep
+data/processed/*.jsonl
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Model artifacts (Stage 4-5)
+*.pth
+*.onnx
+checkpoints/
+
+# OS/editor
+.DS_Store
+.vscode/

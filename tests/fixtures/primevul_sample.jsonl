@@ -1,0 +1,3 @@
+{"func": "int *alloc_int() { int *p; *p = 42; return p; }", "target": 1, "cwe": "CWE-457", "project": "ffmpeg/ffmpeg", "commit_id": "pv001", "file_name": "alloc.c"}
+{"func": "int *alloc_int() { int *p = malloc(sizeof(int)); *p = 42; return p; }", "target": 0, "cwe": "", "project": "ffmpeg/ffmpeg", "commit_id": "pv002", "file_name": "alloc.c"}
+{"func": "void unsafe_read(char *buf) { gets(buf); }", "target": 1, "cwe": "CWE-242", "project": "libgd/libgd", "commit_id": "pv003", "file_name": "read.cpp"}

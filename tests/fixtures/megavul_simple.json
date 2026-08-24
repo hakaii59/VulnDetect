@@ -1,0 +1,29 @@
+[
+  {
+    "func": "void copy(char *dst, char *src) { strcpy(dst, src); }",
+    "is_vul": true,
+    "cwe_ids": ["CWE-120"],
+    "commit_hash": "mv001",
+    "repo_name": "torvalds/linux",
+    "language": "c",
+    "func_name": "copy"
+  },
+  {
+    "func": "void copy(char *dst, char *src, size_t n) { strncpy(dst, src, n); }",
+    "is_vul": false,
+    "cwe_ids": [],
+    "commit_hash": "mv002",
+    "repo_name": "torvalds/linux",
+    "language": "c",
+    "func_name": "copy"
+  },
+  {
+    "func": "public void run(String cmd) { Runtime.getRuntime().exec(cmd); }",
+    "is_vul": true,
+    "cwe_ids": ["CWE-78"],
+    "commit_hash": "mv003",
+    "repo_name": "apache/tomcat",
+    "language": "java",
+    "func_name": "run"
+  }
+]
