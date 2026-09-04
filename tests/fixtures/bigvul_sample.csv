@@ -1,4 +1,0 @@
-func_before,func_after,vul,CWE ID,project,commit_id,lang
-"void f(char *s) { char b[16]; strcpy(b, s); }","void f(char *s) { char b[16]; strncpy(b, s, 15); b[15]='\0'; }",1,CWE-119,openssl,abc123,C
-"int add(int a, int b) { return a + b; }","int add(int a, int b) { return a + b; }",0,,openssl,def456,C
-"char *dup(char *s) { char *p = malloc(strlen(s)); strcpy(p, s); return p; }","char *dup(char *s) { char *p = malloc(strlen(s) + 1); strcpy(p, s); return p; }",1,CWE-131,curl,ghi789,C++

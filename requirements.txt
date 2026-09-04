@@ -1,24 +1,31 @@
-# --- Stage 1: data pipeline (needed now) ---
-pyyaml>=6.0
-pytest>=8.0
+# --- Core data handling ---
+pandas
+numpy
+scikit-learn
+pyyaml
+tqdm
 
-# --- Stage 2: regex layer ---
-# (stdlib re only, no extra deps)
+# --- Dataset loading (HuggingFace) ---
+datasets
+huggingface_hub
 
-# --- Stage 3: tree-sitter AST layer ---
-# py-tree-sitter>=0.21
-# tree-sitter-c>=0.21
-# tree-sitter-cpp>=0.22
-# tree-sitter-java>=0.21
+# --- Layer 3: GraphCodeBERT fine-tuning ---
+transformers
+torch
+accelerate
 
-# --- Stage 4: GraphCodeBERT fine-tuning ---
-# torch>=2.2
-# transformers>=4.40
-# scikit-learn>=1.4
-# pandas>=2.2
-# tqdm>=4.66
+# --- Layer 2: AST parsing ---
+tree-sitter
+tree-sitter-cpp
 
-# --- Stage 5: ONNX export/inference ---
-# onnx>=1.16
-# onnxruntime>=1.18
-# optimum[onnxruntime]>=1.20
+# --- Model export / fast inference ---
+onnx
+onnxruntime
+
+# --- EDA / notebooks ---
+jupyter
+matplotlib
+seaborn
+
+# --- Testing ---
+pytest

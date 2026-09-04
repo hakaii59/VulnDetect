@@ -1,0 +1,13 @@
+# Runtime deps for CI scanning (Layer 2 + Layer 3-ONNX only).
+# Deliberately does NOT include torch / onnx: the INT8 ONNX model runs through
+# onnxruntime, so CI stays fast and light.
+#
+# transformers + tokenizers are needed only to instantiate the tokenizer
+# (AutoTokenizer.from_pretrained) from models/graphcodebert_finetuned/.
+onnxruntime>=1.17
+numpy>=1.24
+transformers>=4.41
+tokenizers>=0.19
+huggingface_hub>=0.23
+tree-sitter>=0.21
+tree-sitter-cpp>=0.22

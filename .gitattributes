@@ -1,0 +1,9 @@
+# Normalize line endings for the files that run as shell scripts / heredocs in
+# GitHub Actions. LF keeps `bash -e` and `python - <<'EOF'` blocks deterministic
+# on Windows-authored checkouts (this repo is developed on Windows).
+* text=auto eol=lf
+
+# Everything else stays as the developer wrote it.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.ipynb text eol=lf

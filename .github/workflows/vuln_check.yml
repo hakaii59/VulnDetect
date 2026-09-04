@@ -1,0 +1,195 @@
+# VulnDetect-CPP — CI vulnerability gate
+#
+# What this workflow does
+# -----------------------
+# On every push / pull request it:
+#   1. installs the LIGHT runtime dependencies (onnxruntime + tree-sitter),
+#      because the ONNX INT8 model lets the pipeline run WITHOUT torch/transformers
+#   2. fetches the model + tokenizer files (models/* are git-ignored)
+#   3. scans every C/C++ file under samples/ with the full 3-layer pipeline
+#      (regex -> AST -> GraphCodeBERT ONNX)
+#   4. fails the job (red X) if any scanned file is flagged "vulnerable"
+#
+# Job flow
+# --------
+#   fetch-model  -> makes models/model.onnx + tokenizer available, uploads it
+#                   as a workflow artifact for the scan job, and stores it in
+#                   GitHub's Actions cache so later runs skip the heavy step.
+#   scan         -> needs: fetch-model, downloads the artifact, runs the
+#                   3-layer gate over samples/, fails on a "vulnerable" verdict.
+#
+# MODEL SOURCE — 3 mechanisms, tried in order inside fetch-model
+# --------------------------------------------------------------
+#   A) Actions cache  (default) — once built, model.onnx is cached (keyed by
+#      scripts/fetch_model.py + CI_MODEL_URL). Evicted after 7 days without
+#      activity, then rebuilt once.
+#
+#   B) CI_MODEL_URL (optional, fastest) — set a repository VARIABLE
+#      (Settings -> Secrets and variables -> Actions -> Variables) to a raw
+#      URL of your INT8 model.onnx (e.g. a GitHub Release asset). CI downloads
+#      it directly instead of rebuilding.
+#
+#   C) HuggingFace rebuild (fallback) — with no cache and no CI_MODEL_URL, CI
+#      rebuilds an INT8 ONNX from the fine-tuned checkpoint. Heaviest path;
+#      included so the workflow works even with zero extra setup.
+
+name: vuln-check
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:        # also allow running it manually from the Actions tab
+
+concurrency:
+  group: vuln-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_MODEL_URL: ${{ vars.CI_MODEL_URL }}   # optional; '' if unset
+  MODEL_CACHE_DIR: ${{ runner.temp }}/hf-cache
+  PYTHONUTF8: "1"                          # force UTF-8 stdout on all runners
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_CACHE_DIR: "1"
+
+jobs:
+  compile-check:
+    name: Python compile check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: py_compile all python files
+        run: |
+          python - <<'EOF'
+          import pathlib, py_compile
+          bad = []
+          for p in pathlib.Path('.').rglob('*.py'):
+              if any(part in {'.venv', 'venv', '.git'} for part in p.parts):
+                  continue
+              try:
+                  py_compile.compile(str(p), doraise=True)
+              except py_compile.PyCompileError as e:
+                  bad.append(str(e))
+          if bad:
+              print('\n'.join(bad))
+              raise SystemExit(1)
+          print('All Python files compile OK.')
+          EOF
+
+  fetch-model:
+    name: Fetch model
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check for committed model (git-lfs path)
+        id: present
+        run: |
+          # "Committed" means BOTH the ONNX model AND the tokenizer files the
+          # scan job needs are already in the repo. If only model.onnx is there
+          # (e.g. weights committed via LFS but tokenizer not), we must still
+          # fetch the tokenizer below.
+          if [ -f models/model.onnx ] \
+             && [ -f models/graphcodebert_finetuned/tokenizer.json ] \
+             && [ -f models/graphcodebert_finetuned/tokenizer_config.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            ls -lh models/model.onnx
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore cached model
+        id: cache
+        if: steps.present.outputs.present != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            models/model.onnx
+            models/graphcodebert_finetuned/tokenizer.json
+            models/graphcodebert_finetuned/tokenizer_config.json
+          key: vuln-model-v1-${{ hashFiles('scripts/fetch_model.py') }}-${{ env.CI_MODEL_URL }}
+      - name: Install CI deps (onnxruntime/transformers/tree-sitter)
+        if: steps.present.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt
+      - name: Install rebuild deps (torch/onnx) — only for HF-rebuild path
+        if: steps.present.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true' && env.CI_MODEL_URL == ''
+        run: |
+          python -m pip install -r requirements-fetch.txt
+      - name: Fetch / rebuild model
+        if: steps.present.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
+        env:
+          HF_MODEL_REPO: benjis/bigvul-model
+          HF_TOKENIZER_REPO: microsoft/graphcodebert-base
+        run: |
+          if [ -n "$CI_MODEL_URL" ]; then
+            echo "==> Downloading model.onnx from CI_MODEL_URL"
+            mkdir -p models models/graphcodebert_finetuned
+            curl -fL "$CI_MODEL_URL" -o models/model.onnx
+          else
+            echo "==> No cache & no CI_MODEL_URL -> rebuilding INT8 ONNX from HF checkpoint"
+            python scripts/fetch_model.py
+          fi
+          test -f models/model.onnx
+      - name: Store model in cache for future runs
+        if: steps.present.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            models/model.onnx
+            models/graphcodebert_finetuned/tokenizer.json
+            models/graphcodebert_finetuned/tokenizer_config.json
+          key: vuln-model-v1-${{ hashFiles('scripts/fetch_model.py') }}-${{ env.CI_MODEL_URL }}
+      - name: Upload model artifact for the scan job
+        uses: actions/upload-artifact@v4
+        with:
+          name: vuln-model
+          path: |
+            models/model.onnx
+            models/graphcodebert_finetuned/tokenizer.json
+            models/graphcodebert_finetuned/tokenizer_config.json
+          if-no-files-found: error
+
+  scan:
+    name: Scan samples (3-layer gate)
+    runs-on: ubuntu-latest
+    needs: fetch-model
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vuln-model
+          path: .
+      - name: Verify model present
+        run: ls -lh models/model.onnx
+      - name: Install runtime deps (onnxruntime + tree-sitter only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt
+      - name: Scan C/C++ samples
+        id: scan
+        run: python scripts/scan_samples.py export samples > scan_summary.json
+      - name: Show scan report
+        run: cat scan_summary.json
+      - name: Gate — fail the build if any sample is 'vulnerable'
+        run: python scripts/scan_samples.py scan samples
+      - name: Upload scan summary (on failure, for PR review)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-summary
+          path: scan_summary.json
+

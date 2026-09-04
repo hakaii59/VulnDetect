@@ -1,0 +1,7 @@
+# Heavy deps needed ONLY by the "rebuild model from HuggingFace checkpoint"
+# path of the CI workflow (scripts/fetch_model.py) — installing torch just to
+# run ONNX inference would be wasteful, so these are installed only in the
+# fetch-model job, on top of requirements-ci.txt.
+torch>=2.2
+onnx>=1.15
+accelerate>=0.30
