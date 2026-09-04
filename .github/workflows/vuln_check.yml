@@ -48,7 +48,6 @@ concurrency:
 
 env:
   CI_MODEL_URL: ${{ vars.CI_MODEL_URL }}   # optional; '' if unset
-  MODEL_CACHE_DIR: ${{ runner.temp }}/hf-cache
   PYTHONUTF8: "1"                          # force UTF-8 stdout on all runners
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_CACHE_DIR: "1"
