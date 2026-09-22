@@ -292,8 +292,7 @@ up to 1,692.
 
 Split those rows at random and the same commit lands on both sides. The model
 then scores well by recognising code it already saw. The first version of this
-project did exactly that (98.6% of test commits were also in train) and
-reported F1 ≈ 0.95, against published Big-Vul results of 0.3–0.6.
+project did exactly that — 98.6% of test commits were also in train.
 
 **The official split shipped on the Hub does not fix this.** Measured in
 `notebooks/02_preprocessing.ipynb`:
@@ -339,6 +338,33 @@ python scripts\build_dataset.py
 | test | 16,363 | 10.0% | 870 (5.32%) | 394 |
 
 All six leakage checks return 0.
+
+#### What this split does and does not guarantee
+
+It is **commit-disjoint**, not **project-disjoint**. 94.8% of test functions
+come from projects that also appear in train — Chrome alone is 43% of the test
+set, Linux another 22%. So the model may still exploit project-specific idioms,
+APIs and house style.
+
+That is the standard setting for Big-Vul work and it is what the numbers below
+mean, but it is easier than the cross-project setting that the most pessimistic
+published figures come from. A project-disjoint split would be stricter and is
+the obvious next experiment.
+
+Residual near-duplicate leakage was measured separately, by reducing each
+function to a structural skeleton (comments and literals removed, non-keyword
+identifiers collapsed) to catch clones that survive renaming:
+
+| Test functions | Have a structural twin in train |
+|----------------|--------------------------------|
+| all 16,363 | 1,605 (9.8%) |
+| skeleton ≥ 200 chars (6,079) | 122 (**2.0%**) |
+| skeleton ≥ 500 chars (2,011) | 30 (**1.5%**) |
+
+The 9.8% figure is dominated by trivial one-line functions, where structural
+identity is meaningless. Among functions with real bodies the overlap is ~2%,
+and it does **not** favour the positive class: 1.4% of vulnerable test
+functions have a twin, against 2.1% of safe ones.
 
 ### Fine-tuning (Phase 4, `notebooks/03_finetune.ipynb`)
 
