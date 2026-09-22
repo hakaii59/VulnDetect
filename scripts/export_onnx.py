@@ -68,6 +68,10 @@ def export(tokenizer: AutoTokenizer, model: torch.nn.Module) -> None:
     )
     print(f"Saved: {ONNX_PATH} ({ONNX_PATH.stat().st_size / 1e6:.1f} MB)")
 
+    # The fp32 export is scratch: ~475 MB of it, and only the quantized model
+    # ships. fetch_model.py already cleaned up after itself; this did not.
+    ONNX_FP32_PATH.unlink(missing_ok=True)
+
 
 def load_eval_samples(n_per_class: int = 10) -> pd.DataFrame:
     df = pd.read_parquet(TEST_PARQUET)

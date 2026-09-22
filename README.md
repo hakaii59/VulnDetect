@@ -494,34 +494,48 @@ week if Colab keeps dropping you.
 
 ## Results
 
-> ### Status: split fixed, retrain pending
->
-> The data pipeline now produces a commit-disjoint split (see
-> [Dataset](#dataset)), and the leakage guarantee is covered by
-> `tests/test_build_dataset.py`.
->
-> The checkpoint currently in `models/` was trained on the **old, leaking**
-> split and cannot be evaluated honestly against anything. Its old training set
-> was 80% of rows sampled at random across ~4,000 commits, so with a median of
-> 24 functions per commit it saw at least part of essentially every commit in
-> the dataset — there is no held-out data left for it. (Scoring it on the new
-> test set returns F1 ≈ 0.97, which measures memorisation, not skill.)
->
-> So the table stays empty until a model is retrained on the clean split.
-> `notebooks/03_finetune.ipynb` now evaluates the **test** set at the end and
-> writes everything to `models/graphcodebert_finetuned/metrics.json`.
+Trained on the commit-disjoint split (131K functions, 3 epochs, ~3.2 h on a
+Colab T4). Numbers come from
+`models/graphcodebert_finetuned/metrics.json`, written by the training
+notebook; reproduce them locally with `python scripts/evaluate.py`.
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | — |
-| Precision (vul=1) | — |
-| Recall (vul=1) | — |
-| F1 (vul=1) | — |
-| ROC-AUC | — |
+| Metric | Validation | **Test** |
+|--------|-----------|----------|
+| Accuracy | 0.9721 | **0.9759** |
+| Precision (vul=1) | 0.7161 | **0.7831** |
+| Recall (vul=1) | 0.7876 | **0.7552** |
+| F1 (vul=1) | 0.7501 | **0.7689** |
+| ROC-AUC | 0.9480 | **0.9271** |
 
-> **Why not accuracy?** With ~17:1 class imbalance a model that always predicts
-> "not vulnerable" is ~94% accurate yet useless. We optimise and report
+**Test F1 is slightly above validation F1.** That is the check that matters
+here: validation drove checkpoint selection, so a large gap in the other
+direction would mean the selection had overfit to it. It did not.
+
+Per-epoch, validation F1 peaked at epoch 2 and fell back at epoch 3 while
+training loss kept dropping (0.211 → 0.065 → 0.029) — textbook onset of
+overfitting, caught by keeping the best-F1 checkpoint rather than the last one:
+
+| Epoch | Train loss | Val precision | Val recall | Val F1 |
+|-------|-----------|---------------|------------|--------|
+| 1 | 0.2106 | 0.5469 | 0.8232 | 0.6572 |
+| 2 | 0.0646 | 0.7161 | 0.7876 | **0.7501** ← kept |
+| 3 | 0.0291 | 0.7204 | 0.7750 | 0.7467 |
+
+> **Why not accuracy?** With ~18:1 class imbalance a model that always predicts
+> "not vulnerable" is ~94.7% accurate yet useless. We optimise and report
 > precision / recall / F1 for the *vulnerable* class instead.
+
+### How to read 0.77
+
+Published Big-Vul numbers span a wide range depending entirely on how the data
+was split: papers using the standard random split report F1 up to ~0.9,
+cross-project evaluations land nearer 0.3–0.6. This split is commit-disjoint
+but not project-disjoint, so 0.77 sitting between those poles is what it should
+look like. An F1 near 0.95 on this data would be a reason to go hunting for
+leakage, which is exactly how the first version of this project went wrong.
+
+The `--group-by project` dataset exists for the stricter measurement; training
+on it is the next experiment.
 
 ---
 
@@ -657,8 +671,11 @@ finding suppressed by a low model score) has a dedicated test, as does the
   parse cleanly without their headers; on those the pipeline is regex-only.
 - **Layer 3 does not generalize to short, synthetic code** — trained on
   real-world CVE patches, it scores a textbook `strcpy` overflow at
-  P(vulnerable) ≈ 0.001. This is why high-severity findings are not gated
-  behind it.
+  P(vulnerable) ≈ 0.0002. Retraining on the leakage-free split did **not** fix
+  this (the leaking model scored 0.001 on the same input), so it is domain
+  shift, not leakage: Big-Vul functions are long, real, in-context code and a
+  six-line fixture looks like nothing the model ever saw. This is why
+  high-severity findings are not gated behind it.
 - **The current train/test split leaks** (see [Results](#results)); the reported
   metrics are intentionally blank until it is fixed and the model is retrained.
 - The bundled ONNX model is **not** a production security product; it is an
