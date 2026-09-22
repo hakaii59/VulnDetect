@@ -3,3 +3,11 @@
 -r requirements-ci.txt
 
 pytest==9.1.1
+
+# tests/test_build_dataset.py exercises the split logic, which is where data
+# leakage would creep back in. It needs pandas + scikit-learn, but never the
+# network: only scripts/build_dataset.load_raw() touches the Hub, and no test
+# calls it.
+pandas==3.0.5
+pyarrow==25.0.1
+scikit-learn==1.9.0

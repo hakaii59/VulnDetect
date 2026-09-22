@@ -160,7 +160,8 @@ vulndetect-cpp/
 │       └── vuln_check.yml        # CI gate (Phase 7)
 ├── data/
 │   ├── raw/                      # downloaded Big-Vul data (git-ignored)
-│   └── processed/                # train/val/test.parquet + class_weights.json
+│   └── processed/                # train/val/test.parquet, class_weights.json,
+│                                 #   split_report.json (leakage checks)
 ├── models/
 │   ├── model.onnx                # exported INT8 model (Phase 6, git-ignored)
 │   └── graphcodebert_finetuned/  # PyTorch checkpoint (Phase 4, git-ignored)
@@ -173,6 +174,7 @@ vulndetect-cpp/
 │   ├── sample_safe.c             # CI fixture — must pass
 │   └── expected.json             # expected verdict per fixture (self-test)
 ├── scripts/
+│   ├── build_dataset.py          # Phase 3 — leakage-free splits (asserts it)
 │   ├── export_onnx.py            # Phase 6 — export + quantize + verify
 │   ├── fetch_model.py            # Phase 7 — fetch model on CI runner
 │   └── scan_samples.py           # Phase 7 — scan a folder, gate on result
@@ -185,6 +187,7 @@ vulndetect-cpp/
 │   └── utils.py
 ├── tests/
 │   ├── conftest.py               # fixtures: no-model / stub-model pipelines
+│   ├── test_build_dataset.py     # split integrity — the anti-leakage tests
 │   ├── test_pipeline.py          # regex rules, AST validation, verdict logic
 │   └── test_scan_gate.py         # unit tests for the CI gate logic
 ├── requirements.txt              # full local/development deps
@@ -280,18 +283,62 @@ deleted in the PR) are skipped rather than failing the gate.
 (Big-Vul) on Hugging Face — 217K real-world C/C++ functions mined from the
 National Vulnerability Database, each labeled `vul ∈ {0, 1}`.
 
-**Preprocessing (Phase 3, `notebooks/02_preprocessing.ipynb`):**
+### The split is the hard part
 
-1. **Language normalization** — raw labels `C`, `CPP`, `C++` are normalized and
-   filtered to C / C++ only.
-2. **Cleaning** — strip whitespace, drop empty `func_before`.
-3. **Deduplication** — exact-duplicate `func_before` rows removed globally.
-   Note this only catches byte-identical functions; reindented near-duplicates
-   survive (1,430 remain inside `train` under whitespace-normalized hashing).
-4. **Stratified split** — 80/10/10 train/val/test, preserving the class ratio.
-   WARNING: **this split is row-wise, not commit-wise — see Results below.**
-5. **Class weights** — saved to `data/processed/class_weights.json` for
-   weighted sampling (the `vul=1` class is ~17× rarer than `vul=0`).
+Big-Vul mines rows **per CVE fix commit**: one commit contributes every
+function it touched, and those functions are near-identical to one another.
+217K rows come from roughly **4,000 commits** — a median of 24 functions each,
+up to 1,692.
+
+Split those rows at random and the same commit lands on both sides. The model
+then scores well by recognising code it already saw. The first version of this
+project did exactly that (98.6% of test commits were also in train) and
+reported F1 ≈ 0.95, against published Big-Vul results of 0.3–0.6.
+
+**The official split shipped on the Hub does not fix this.** Measured in
+`notebooks/02_preprocessing.ipynb`:
+
+```
+official test commits also in train: 3,208 / 3,215 (99.8%)
+official val  commits also in train: 3,249 / 3,256 (99.8%)
+```
+
+So the split is rebuilt from scratch, grouped on `commit_id`. The trade-off is
+deliberate: results are no longer directly comparable to papers using the
+official split, but they are honest.
+
+**Preprocessing ([`scripts/build_dataset.py`](./scripts/build_dataset.py), narrated in
+`notebooks/02_preprocessing.ipynb`):**
+
+1. **Language normalization** — `C`, `CPP`, `C++` normalized, filtered to C/C++
+   (the result is ~98.6% C; C++ is only 3,088 functions).
+2. **Cleaning** — strip whitespace, drop empty `func_before` and rows with no
+   `commit_id`.
+3. **Deduplication** — on a **whitespace-normalized** hash, so functions that
+   differ only in formatting collapse. This removes 53,371 rows (24.6%) that
+   exact-string dedup missed.
+4. **Grouped, stratified split** — `StratifiedGroupKFold` on `commit_id`,
+   80/10/10. Every commit stays wholly inside one split while the vulnerable
+   rate stays constant across all three.
+5. **Verification** — the builder **asserts** zero commit overlap and zero code
+   overlap between splits, so a regression fails loudly instead of quietly
+   inflating metrics. Results are written to `data/processed/split_report.json`.
+6. **Class weights** — saved to `data/processed/class_weights.json` for
+   `WeightedRandomSampler` (the `vul=1` class is ~18× rarer).
+
+Rebuild it with:
+
+```powershell
+python scripts\build_dataset.py
+```
+
+| Split | Rows | Share | Vulnerable | Commits |
+|-------|------|-------|-----------|---------|
+| train | 130,910 | 80.0% | 6,962 (5.32%) | 3,208 |
+| val | 16,363 | 10.0% | 871 (5.32%) | 389 |
+| test | 16,363 | 10.0% | 870 (5.32%) | 394 |
+
+All six leakage checks return 0.
 
 ### Fine-tuning (Phase 4, `notebooks/03_finetune.ipynb`)
 
@@ -313,27 +360,22 @@ National Vulnerability Database, each labeled `vul ∈ {0, 1}`.
 
 ## Results
 
-> ### Known issue: the current split leaks, so these numbers are inflated
+> ### Status: split fixed, retrain pending
 >
-> Big-Vul rows are mined **per fix-commit**, and one commit contributes many
-> near-identical functions. `notebooks/02_preprocessing.ipynb` splits
-> **row-wise**, so the same commit lands in both train and test. Measured on
-> the current `data/processed/`:
+> The data pipeline now produces a commit-disjoint split (see
+> [Dataset](#dataset)), and the leakage guarantee is covered by
+> `tests/test_build_dataset.py`.
 >
-> | Leakage check | Result |
-> |---|---|
-> | Test commits also present in train | **2,830 / 2,869 (98.6%)** |
-> | Functions shared train and test (whitespace-normalized) | 377 |
-> | Near-duplicate rows within train | 1,430 |
+> The checkpoint currently in `models/` was trained on the **old, leaking**
+> split and cannot be evaluated honestly against anything. Its old training set
+> was 80% of rows sampled at random across ~4,000 commits, so with a median of
+> 24 functions per commit it saw at least part of essentially every commit in
+> the dataset — there is no held-out data left for it. (Scoring it on the new
+> test set returns F1 ≈ 0.97, which measures memorisation, not skill.)
 >
-> Scoring the checkpoint on a balanced 40/40 test sample gives **F1 ~ 0.95,
-> ROC-AUC ~ 0.99** — far above published Big-Vul results (F1 ~ 0.3-0.6). That
-> gap is the leakage, not model quality, so the table below is deliberately
-> left empty rather than filled with numbers that will not survive scrutiny.
->
-> **Fix in progress:** replace `train_test_split` with `GroupShuffleSplit`
-> grouped on `commit_id`, dedupe on whitespace-normalized hashes, retrain, and
-> report both validation **and test** metrics.
+> So the table stays empty until a model is retrained on the clean split.
+> `notebooks/03_finetune.ipynb` now evaluates the **test** set at the end and
+> writes everything to `models/graphcodebert_finetuned/metrics.json`.
 
 | Metric | Value |
 |--------|-------|
@@ -430,7 +472,8 @@ in `tests/conftest.py`, so the suite runs anywhere `requirements-ci.txt` install
 
 | File | Covers |
 |------|--------|
-| `tests/test_pipeline.py` | regex rule hygiene (unique IDs, well-formed CWE IDs), AST confirm/reject behaviour, parse-error fallback, and the full verdict table in both 2-layer and 3-layer mode |
+| `tests/test_build_dataset.py` | that the split cannot leak: no commit spans two splits, no code is shared, the label rate is preserved, and `verify()` **raises** when leakage is injected |
+| `tests/test_pipeline.py` | regex rule hygiene (unique IDs, well-formed CWE IDs), AST confirm/reject behaviour including qualified calls (`std::strcpy`), parse-error fallback, and the full verdict table in both 2-layer and 3-layer mode |
 | `tests/test_scan_gate.py` | the CI gate: exit 1 on `vulnerable`, exit 0 on safe, explicit file targets, deleted targets, JSON export, and a live `selftest` against `samples/` |
 
 The regression that made the gate unfireable (a high-severity AST-confirmed
@@ -441,8 +484,13 @@ finding suppressed by a low model score) has a dedicated test, as does the
 
 ## Limitations
 
-- **Truncation at 512 tokens** — GraphCodeBERT (RoBERTa-based) caps at 512
-  position embeddings; longer functions are truncated.
+- **Truncation at 512 tokens, unevenly** — GraphCodeBERT (RoBERTa-based) caps
+  at 512 position embeddings. Measured on 2,000 test functions: median length
+  is 170 tokens, but **18.6% exceed the cap — 34.3% of vulnerable functions
+  against 17.8% of safe ones.** Vulnerable functions are longer, so the model
+  often never sees the part where the bug lives, and the truncation rate itself
+  correlates with the label. `notebooks/03_finetune.ipynb` measures this before
+  training.
 - **Function-level granularity** — the model labels whole functions, not
   specific lines or statements.
 - **Regex rules are a fixed, curated set** — they cover common CWE patterns but
