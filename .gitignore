@@ -11,6 +11,7 @@ venv/
 # Data (large / downloaded, not committed to git)
 data/raw/*
 data/processed/*
+data/processed_project/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 

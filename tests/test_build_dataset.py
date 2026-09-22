@@ -116,6 +116,64 @@ class TestSplit:
         assert a != b
 
 
+class TestProjectSplit:
+    """The stricter, cross-codebase split (--group-by project)."""
+
+    @staticmethod
+    def lopsided(n_small: int = 60) -> pd.DataFrame:
+        """One project dominating the rest, as Big-Vul's Chrome does (40% of rows)."""
+        rows = []
+        for f in range(800):
+            rows.append({"project": "giant", "commit_id": f"c{f // 10}", "CWE ID": "",
+                         "lang": "C", "func_before": f"void giant_{f}() {{ return; }}",
+                         "func_after": "", "vul": int(f % 20 == 0)})
+        for pnum in range(n_small):
+            for f in range(10):
+                rows.append({"project": f"small{pnum}", "commit_id": f"s{pnum}_{f // 5}", "CWE ID": "",
+                             "lang": "C", "func_before": f"void small_{pnum}_{f}() {{ return; }}",
+                             "func_after": "", "vul": int(f % 20 == 0)})
+        return deduplicate(clean(pd.DataFrame(rows)))
+
+    def test_no_project_spans_two_splits(self):
+        df = self.lopsided()
+        splits = split(df, seed=42, group_col="project")
+        groups = {n: set(p["project"]) for n, p in splits.items()}
+        assert not (groups["train"] & groups["test"])
+        assert not (groups["train"] & groups["val"])
+        assert not (groups["val"] & groups["test"])
+
+    def test_a_dominant_project_does_not_wreck_the_proportions(self):
+        """StratifiedGroupKFold would put the giant in one 10% fold; greedy
+        assignment puts it in train and builds val/test from the tail."""
+        df = self.lopsided()
+        splits = split(df, seed=42, group_col="project")
+        total = len(df)
+        assert len(splits["train"]) / total == pytest.approx(0.8, abs=0.08)
+        assert len(splits["val"]) / total == pytest.approx(0.1, abs=0.08)
+        assert len(splits["test"]) / total == pytest.approx(0.1, abs=0.08)
+        assert "giant" in set(splits["train"]["project"])
+
+    def test_every_row_is_kept_exactly_once(self):
+        df = self.lopsided()
+        splits = split(df, seed=42, group_col="project")
+        assert sum(len(p) for p in splits.values()) == len(df)
+
+    def test_verify_checks_the_requested_group(self):
+        df = self.lopsided()
+        splits = split(df, seed=42, group_col="project")
+        checks = verify(splits, group_col="project")
+        assert set(checks.values()) == {0}
+        assert any("project_overlap" in k for k in checks)
+
+    def test_verify_raises_when_a_project_spans_splits(self):
+        df = self.lopsided()
+        splits = split(df, seed=42, group_col="project")
+        leaked = splits["train"].iloc[[0]]
+        splits["test"] = pd.concat([splits["test"], leaked], ignore_index=True)
+        with pytest.raises(AssertionError, match="Leakage detected"):
+            verify(splits, group_col="project")
+
+
 class TestVerify:
     def test_passes_on_a_clean_split(self, dataset):
         checks = verify(split(dataset, seed=42))

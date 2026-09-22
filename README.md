@@ -348,8 +348,30 @@ APIs and house style.
 
 That is the standard setting for Big-Vul work and it is what the numbers below
 mean, but it is easier than the cross-project setting that the most pessimistic
-published figures come from. A project-disjoint split would be stricter and is
-the obvious next experiment.
+published figures come from.
+
+The stricter split is built by the same script:
+
+```powershell
+python scriptsuild_dataset.py --group-by project   # -> data/processed_project/
+```
+
+No project then appears in two splits, so the test set asks whether the model
+generalises to a codebase it has never seen:
+
+| | commit-disjoint | project-disjoint |
+|---|---|---|
+| Output | `data/processed/` | `data/processed_project/` |
+| Groups | 3,991 commits | 309 projects |
+| train | Chrome, Linux, Android, ... | same giants (105 projects) |
+| test | commits from the same repos | php, FFmpeg, openssl, poppler, krb5 (103 projects) |
+| Asks | "a fix you have not seen" | "a codebase you have not seen" |
+
+`StratifiedGroupKFold` cannot produce the second one: Chrome is 40.5% of all
+rows, so whichever fold holds it is 40% of the data rather than 10%. Project
+splits use greedy largest-first assignment instead, which lands the giants in
+train and builds val/test from the tail — reaching 80.0/10.0/10.0% with zero
+project overlap.
 
 Residual near-duplicate leakage was measured separately, by reducing each
 function to a structural skeleton (comments and literals removed, non-keyword

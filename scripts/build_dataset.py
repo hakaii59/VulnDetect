@@ -17,6 +17,12 @@ results sit around 0.3-0.6.
 3,208 of its 3,215 test commits (99.8%) also appear in its train split. So it
 is rebuilt from scratch instead, grouped on `commit_id`.
 
+`--group-by project` builds the stricter, cross-codebase variant into
+`data/processed_project/`: no project appears in two splits, so the test set
+asks whether the model generalises to a repo it has never seen. Big-Vul is
+dominated by a few repos (Chrome 40.5% of rows, Linux 25.3%), so the split
+proportions there are approximate by necessity — see `_split_greedy`.
+
 What it does
 ------------
 1. concatenate the Hub's three splits (they are rebuilt anyway)
@@ -31,8 +37,8 @@ What it does
 7. write the parquet files, `class_weights.json`, and `split_report.json`
 
 Usage:
-    python scripts/build_dataset.py
-    python scripts/build_dataset.py --out-dir data/processed --seed 42
+    python scripts/build_dataset.py                      # -> data/processed/
+    python scripts/build_dataset.py --group-by project   # -> data/processed_project/
 """
 
 from __future__ import annotations
@@ -113,10 +119,20 @@ def deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def split(df: pd.DataFrame, seed: int) -> dict[str, pd.DataFrame]:
-    """80/10/10, grouped on commit_id and stratified on the label."""
+def split(df: pd.DataFrame, seed: int, group_col: str = GROUP_COL) -> dict[str, pd.DataFrame]:
+    """80/10/10, grouped so no group spans two splits, stratified on the label.
+
+    `StratifiedGroupKFold` balances both size and label rate across folds, which
+    works well for commit_id (~4,000 similar-sized groups). It cannot work for
+    `project`: Big-Vul is dominated by a handful of repos (Chrome 40.5% of rows,
+    Linux 25.3%), so whichever fold holds Chrome is 40% of the data, not 10%.
+    Project splits therefore use greedy assignment instead.
+    """
+    if group_col == "project":
+        return _split_greedy(df, seed, group_col)
+
     sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
-    folds = [test_idx for _, test_idx in sgkf.split(df, df[LABEL_COL], groups=df[GROUP_COL])]
+    folds = [test_idx for _, test_idx in sgkf.split(df, df[LABEL_COL], groups=df[group_col])]
 
     test_idx, val_idx = folds[0], folds[1]
     train_idx = np.setdiff1d(np.arange(len(df)), np.concatenate([test_idx, val_idx]))
@@ -128,13 +144,48 @@ def split(df: pd.DataFrame, seed: int) -> dict[str, pd.DataFrame]:
     }
 
 
-def verify(splits: dict[str, pd.DataFrame]) -> dict:
+def _split_greedy(df: pd.DataFrame, seed: int, group_col: str) -> dict[str, pd.DataFrame]:
+    """Assign whole groups largest-first to whichever split is furthest short.
+
+    Classic bin-packing heuristic. With a few huge groups, exact 80/10/10 is
+    impossible -- the giants land in train and val/test are built from the tail.
+    That is the point of a project-held-out evaluation: it asks whether the
+    model generalises to a codebase it has never seen.
+    """
+    targets = {"train": 0.8, "val": 0.1, "test": 0.1}
+    sizes = df.groupby(group_col).size().sort_values(ascending=False)
+
+    # Deterministic tie-breaking, but seed-dependent so the split can be varied.
+    rng = np.random.default_rng(seed)
+    order = list(sizes.index)
+
+    assigned: dict[str, list] = {k: [] for k in targets}
+    counts = {k: 0 for k in targets}
+    total = len(df)
+
+    for group in order:
+        n = int(sizes[group])
+        deficits = {k: targets[k] * total - counts[k] for k in targets}
+        best = max(deficits.values())
+        # Break ties randomly so no split is systematically favoured.
+        candidates = [k for k, v in deficits.items() if v >= best - 1e-9]
+        choice = candidates[0] if len(candidates) == 1 else str(rng.choice(candidates))
+        assigned[choice].append(group)
+        counts[choice] += n
+
+    return {
+        name: df[df[group_col].isin(groups)].reset_index(drop=True)
+        for name, groups in assigned.items()
+    }
+
+
+def verify(splits: dict[str, pd.DataFrame], group_col: str = GROUP_COL) -> dict:
     """Fail loudly on any leakage. This is the check the old pipeline lacked."""
     train, val, test = splits["train"], splits["val"], splits["test"]
     checks = {
-        "commit_overlap_train_test": len(set(train[GROUP_COL]) & set(test[GROUP_COL])),
-        "commit_overlap_train_val": len(set(train[GROUP_COL]) & set(val[GROUP_COL])),
-        "commit_overlap_val_test": len(set(val[GROUP_COL]) & set(test[GROUP_COL])),
+        f"{group_col}_overlap_train_test": len(set(train[group_col]) & set(test[group_col])),
+        f"{group_col}_overlap_train_val": len(set(train[group_col]) & set(val[group_col])),
+        f"{group_col}_overlap_val_test": len(set(val[group_col]) & set(test[group_col])),
         "code_overlap_train_test": len(set(train["_fingerprint"]) & set(test["_fingerprint"])),
         "code_overlap_train_val": len(set(train["_fingerprint"]) & set(val["_fingerprint"])),
         "code_overlap_val_test": len(set(val["_fingerprint"]) & set(test["_fingerprint"])),
@@ -158,9 +209,22 @@ def class_weights(train: pd.DataFrame) -> dict[str, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", default="data/processed", help="where to write the parquet files")
+    parser.add_argument("--out-dir", default=None, help="where to write the parquet files")
     parser.add_argument("--seed", type=int, default=42, help="split seed")
+    parser.add_argument(
+        "--group-by",
+        choices=["commit_id", "project"],
+        default=GROUP_COL,
+        help="what must not span two splits. 'commit_id' is the default and "
+             "removes the leakage that matters most; 'project' is the stricter, "
+             "cross-codebase setting.",
+    )
     args = parser.parse_args()
+
+    group_col = args.group_by
+    # Keep the two datasets side by side so both can be reported.
+    default_out = "data/processed" if group_col == GROUP_COL else "data/processed_project"
+    args.out_dir = args.out_dir or default_out
 
     out_dir = Path(args.out_dir)
     if not out_dir.is_absolute():
@@ -168,10 +232,10 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = deduplicate(clean(load_raw()))
-    print(f"\nGrouping column '{GROUP_COL}': {df[GROUP_COL].nunique():,} distinct commits "
-          f"for {len(df):,} functions (median {df.groupby(GROUP_COL).size().median():.0f} per commit)")
+    print(f"\nGrouping on '{group_col}': {df[group_col].nunique():,} distinct groups "
+          f"for {len(df):,} functions (median {df.groupby(group_col).size().median():.0f} per group)")
 
-    splits = split(df, args.seed)
+    splits = split(df, args.seed, group_col)
 
     print("\nSplit sizes:")
     summary = {}
@@ -182,12 +246,13 @@ def main() -> int:
             "share": round(len(part) / len(df), 4),
             "vulnerable": n_vul,
             "vulnerable_rate": round(float(part[LABEL_COL].mean()), 4),
-            "commits": int(part[GROUP_COL].nunique()),
+            "groups": int(part[group_col].nunique()),
         }
         print(f"  {name:5s}: {len(part):7,} rows ({len(part) / len(df):5.1%})  "
-              f"vul=1: {n_vul:5,} ({part[LABEL_COL].mean():.2%})  commits: {part[GROUP_COL].nunique():,}")
+              f"vul=1: {n_vul:5,} ({part[LABEL_COL].mean():.2%})  "
+              f"{group_col}s: {part[group_col].nunique():,}")
 
-    checks = verify(splits)
+    checks = verify(splits, group_col)
 
     weights = class_weights(splits["train"])
     (out_dir / "class_weights.json").write_text(json.dumps(weights, indent=2), encoding="utf-8")
@@ -200,11 +265,11 @@ def main() -> int:
 
     report = {
         "dataset": HF_DATASET,
-        "grouped_on": GROUP_COL,
+        "grouped_on": group_col,
         "seed": args.seed,
         "n_folds": N_FOLDS,
         "total_rows_after_cleaning": len(df),
-        "distinct_commits": int(df[GROUP_COL].nunique()),
+        "distinct_groups": int(df[group_col].nunique()),
         "splits": summary,
         "leakage_checks": checks,
         "class_weights": weights,
@@ -212,7 +277,7 @@ def main() -> int:
     (out_dir / "split_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"  Saved split_report.json")
 
-    print("\nDone. Splits are commit-disjoint and duplicate-free.")
+    print(f"\nDone. Splits are {group_col}-disjoint and duplicate-free.")
     return 0
 
 
