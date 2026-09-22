@@ -48,6 +48,30 @@ def _collect_skip_ranges(root: Node) -> list[tuple[int, int]]:
     return ranges
 
 
+def _resolve_callee(fn_node: Node) -> Node | None:
+    """The identifier naming the function a `call_expression` invokes.
+
+    Handles the spellings that still mean the free function our rules target:
+
+    - `strcpy(...)`        -> identifier
+    - `std::strcpy(...)`   -> qualified_identifier; C++ puts the C library in
+                              namespace std, so this IS the libc function
+    - `::strcpy(...)`      -> qualified_identifier rooted at global scope
+    - `a::b::strcpy(...)`  -> nested qualified_identifier, recurse to the leaf
+    - `foo<T>(...)`        -> template_function, take its name
+
+    Returns None for `obj.strcpy(...)` / `ptr->strcpy(...)` (field_expression).
+    A member function that happens to share a name with a libc function is a
+    different function, so treating it as one would be a false positive.
+    """
+    if fn_node.type == "identifier":
+        return fn_node
+    if fn_node.type in {"qualified_identifier", "template_function"}:
+        name = fn_node.child_by_field_name("name")
+        return _resolve_callee(name) if name is not None else None
+    return None
+
+
 def _collect_call_names_by_line(root: Node) -> dict[int, set[str]]:
     """1-indexed line number -> set of function names called on that line."""
     calls: dict[int, set[str]] = {}
@@ -55,9 +79,12 @@ def _collect_call_names_by_line(root: Node) -> dict[int, set[str]]:
     def walk(node: Node) -> None:
         if node.type == "call_expression":
             fn_node = node.child_by_field_name("function")
-            if fn_node is not None and fn_node.type == "identifier":
-                line = fn_node.start_point[0] + 1
-                calls.setdefault(line, set()).add(fn_node.text.decode("utf-8"))
+            callee = _resolve_callee(fn_node) if fn_node is not None else None
+            if callee is not None:
+                # Anchor on the identifier itself, not the qualified prefix, so
+                # the line matches what the regex layer saw.
+                line = callee.start_point[0] + 1
+                calls.setdefault(line, set()).add(callee.text.decode("utf-8"))
         for child in node.children:
             walk(child)
 

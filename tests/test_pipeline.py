@@ -73,6 +73,29 @@ class TestAstLayer:
         assert strcpy_results, "fixture should produce regex hits to reject"
         assert not any(v.confirmed for v in strcpy_results)
 
+    @pytest.mark.parametrize(
+        "call",
+        ["strcpy(a, b)", "std::strcpy(a, b)", "::strcpy(a, b)", "ns::inner::strcpy(a, b)"],
+    )
+    def test_confirms_qualified_calls(self, call):
+        """C++ puts the C library in namespace std, so std::strcpy IS strcpy.
+
+        Resolving only bare `identifier` nodes rejected every qualified call,
+        silently dropping real findings.
+        """
+        code = f"void f(char *a, char *b) {{ {call}; }}"
+        validated = ast_validate(code, regex_scan(code))
+        assert validated and all(v.confirmed for v in validated), call
+
+    def test_rejects_member_calls_with_a_colliding_name(self):
+        """`obj.strcpy(...)` is a different function that merely shares a name."""
+        code = (
+            "struct S { void strcpy(char *, char *); };\n"
+            "void f(S obj, char *a, char *b) { obj.strcpy(a, b); }"
+        )
+        validated = ast_validate(code, regex_scan(code))
+        assert validated and not any(v.confirmed for v in validated)
+
     def test_keeps_findings_when_the_snippet_does_not_parse(self):
         """Unparseable snippets fall back to the regex verdict rather than
         silently dropping findings we cannot verify."""
