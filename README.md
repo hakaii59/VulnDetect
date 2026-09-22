@@ -345,16 +345,29 @@ All six leakage checks return 0.
 | Hyperparameter | Value |
 |----------------|-------|
 | Base model | `microsoft/graphcodebert-base` |
-| Max length | 512 (with truncation) |
-| Batch size | 16 (T4 GPU) |
+| Max length | 512 (with truncation — see [Limitations](#limitations)) |
+| Effective batch size | 16 (`BATCH_SIZE` × `GRAD_ACCUM_STEPS`) |
 | Epochs | 3 |
-| Learning rate | 2e-5 (AdamW) |
+| Learning rate | 2e-5 (AdamW), gradients clipped at 1.0 |
 | Scheduler | linear warmup (10% of steps) |
+| Mixed precision | fp16 AMP when CUDA is available |
 | Sampling | `WeightedRandomSampler` (balanced batches) |
 | Checkpoint | best **validation F1** on the vulnerable class |
+| Reported on | the **test** split, once, after training |
 
-> The notebook auto-detects Colab vs. local and is designed to run on a free
-> Google Colab T4 GPU (~1–2 h for 3 epochs).
+Gradient accumulation keeps the effective batch at 16 on GPUs that cannot hold
+it in one step:
+
+| GPU | `BATCH_SIZE` | `GRAD_ACCUM_STEPS` |
+|-----|--------------|--------------------|
+| Colab T4 (16 GB) | 16 | 1 |
+| 4 GB laptop GPU (e.g. RTX 3050 Ti) | 4 | 4 |
+
+> The notebook auto-detects Colab vs. local. On a free Colab T4 expect roughly
+> **3 hours** for 3 epochs over ~131K functions.
+>
+> **CPU training is not viable** — measured at ~49 s per step (batch 16, seq
+> 512) on an 8-thread laptop CPU, which is ~330 hours for 3 epochs.
 
 ---
 
