@@ -369,6 +369,28 @@ it in one step:
 > **CPU training is not viable** — measured at ~49 s per step (batch 16, seq
 > 512) on an 8-thread laptop CPU, which is ~330 hours for 3 epochs.
 
+#### Surviving a Colab disconnect
+
+Colab's free tier drops sessions on idle (~90 min without interaction) and when
+the shared GPU quota runs out. A 3-hour run will not reliably finish in one
+sitting, so the training loop checkpoints for resume.
+
+After every epoch it writes the **full** training state to Drive — weights,
+AdamW moments, scheduler, AMP scaler, epoch counter, history — as
+`models/training_state.pt` (~1.4 GB, overwritten in place). Reconnect, run the
+notebook from the top, and the loop reports:
+
+```
+Resumed from .../training_state.pt -> starting at epoch 2, best val F1 so far 0.41
+```
+
+Worst case a disconnect costs one epoch (~1 hour) instead of the whole run.
+Delete `training_state.pt` to force a fresh start.
+
+Practical notes: keep the browser tab open and the machine awake; Kaggle
+Notebooks are an alternative with a 12-hour session cap and ~30 GPU-hours per
+week if Colab keeps dropping you.
+
 ---
 
 ## Results
