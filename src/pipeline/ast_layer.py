@@ -4,8 +4,8 @@ Layer 1 (regex) works on raw text, so it can't tell a real function call from
 the same text sitting inside a comment or a string literal. This layer parses
 the code into an AST and confirms (or rejects) each regex finding:
 
-- For findings tied to a specific function (`func_name` set) — confirmed only
-  if there is an actual `call_expression` with that function name on the same
+- For findings tied to specific functions (`func_names` set) — confirmed only
+  if there is an actual `call_expression` for one of those names on the same
   line.
 - For other findings — confirmed only if the match isn't inside a comment or
   string literal.
@@ -119,14 +119,17 @@ def validate(code: str, findings: list[RegexFinding]) -> list[ValidatedFinding]:
 
     results: list[ValidatedFinding] = []
     for f in findings:
-        if f.func_name is not None:
+        if f.func_names:
             called_here = calls_by_line.get(f.line, set())
-            if f.func_name in called_here:
-                results.append(ValidatedFinding(f, True, f"confirmed: real call to {f.func_name}() on this line"))
+            matched = called_here.intersection(f.func_names)
+            if matched:
+                names = ", ".join(sorted(matched))
+                results.append(ValidatedFinding(f, True, f"confirmed: real call to {names}() on this line"))
             else:
+                expected = "/".join(f.func_names)
                 results.append(ValidatedFinding(
                     f, False,
-                    f"rejected: no AST call_expression for {f.func_name}() on this line "
+                    f"rejected: no AST call_expression for {expected}() on this line "
                     f"(likely inside a comment/string, or not actually a call)",
                 ))
         else:

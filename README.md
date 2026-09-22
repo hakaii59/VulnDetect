@@ -98,20 +98,65 @@ is a *corroborating* signal and is **optional** — the pipeline runs without it
 
 ### Layer 1 — Regex (`src/pipeline/regex_layer.py`)
 
-Ten hand-written regex rules map classic C/C++ bugs to their CWE IDs:
+Eighteen regex rules map classic C/C++ bugs to their CWE IDs. **Lift** is
+`P(vulnerable | rule fires)` divided by the 5.32% base rate, measured over all
+163,636 functions — 1.00 would mean the rule carries no signal at all.
 
-| Rule | Pattern | CWE | Severity |
-|------|---------|-----|----------|
-| R001 | `gets()` | CWE-120 (buffer overflow) | high |
-| R002 | `strcpy()` | CWE-120 | high |
-| R003 | `strcat()` | CWE-120 | high |
-| R004 | `sprintf()` | CWE-120 | high |
-| R005 | `printf(non_literal)` | CWE-134 (format string) | medium |
-| R006 | `system()` | CWE-78 (command injection) | high |
-| R007 | `scanf("%s")` without width | CWE-120 | medium |
-| R008 | `malloc(x * y)` | CWE-190 (integer overflow) | medium |
-| R009 | `free()` | CWE-416 (use-after-free) | low |
-| R010 | `memcpy` / `memmove` | CWE-120 | medium |
+| Rule | Pattern | CWE | Severity | Hits | Lift |
+|------|---------|-----|----------|------|------|
+| R001 | `gets()` | CWE-242 | high | 0 | — |
+| R002 | `strcpy()` | CWE-120 | high | 467 | 2.74 |
+| R003 | `strcat()` | CWE-120 | high | 117 | 2.41 |
+| R004 | `sprintf()` | CWE-120 | high | 767 | 2.16 |
+| R005 | `printf(var)` | CWE-134 | high | 5 | 11.28 |
+| R006 | `system/popen/exec*` | CWE-78 | high | 93 | 2.83 |
+| R007 | `scanf("%s")` no width | CWE-120 | high | 34 | 6.08 |
+| R008 | `[mcre]alloc(a * b)` | CWE-190 | medium | 465 | 3.44 |
+| R009 | `free()` | CWE-416 | low | 3,109 | 2.07 |
+| R010 | `memcpy` / `memmove` | CWE-119 | medium | 5,105 | 2.25 |
+| R011 | `strncpy()` | CWE-170 | medium | 367 | 2.87 |
+| R012 | `strncat()` | CWE-119 | medium | 17 | 3.32 |
+| R013 | `alloca()` | CWE-789 | medium | 43 | 3.94 |
+| R014 | `realloc()` | CWE-401 | medium | 264 | 3.06 |
+| R015 | `[mre]alloc(a + b)` | CWE-190 | medium | 374 | 2.77 |
+| R016 | `(int) len/size` cast | CWE-197 | medium | 339 | 3.49 |
+| R017 | `atoi` / `atol` / `atof` | CWE-190 | medium | 404 | 2.56 |
+| R018 | `strtok()` | CWE-476 | low | 28 | 4.03 |
+
+#### The rules were chosen by measurement, not from a textbook
+
+The first version was a list of banned functions, and **3 of its 10 rules never
+matched anything** across 163,636 real functions — not because the patterns are
+rare, but because the regexes were written too narrowly. `R007` required no `;`
+between `scanf(` and `%s`; `R008` matched only `malloc(a * b)` with bare
+identifiers. They looked like coverage and delivered none.
+
+Each candidate was scored by lift before being kept. Rules near 1.00 were
+dropped: `sizeof(ptr)` fires on 7% of the corpus at only 2.12, and a permissive
+`printf(ident, ...)` sits at 1.94 because passing a format variable is ordinary
+code. Measured on the test split:
+
+| | 10 rules (before) | 18 rules (after) |
+|---|---|---|
+| Rules that never fire | **3 / 10** | 3 / 18 |
+| Functions flagged | 763 (4.7%) | 852 (5.2%) |
+| Precision | 10.88% | **11.97%** |
+| Recall | 9.54% | **11.72%** |
+| `high`-only precision (what gates CI) | 11.93% | **13.45%** |
+| `high`-only recall | 1.49% | **1.84%** |
+
+Precision and recall both improved and no function stopped being flagged. The
+89 newly flagged functions are **21.3% vulnerable against a 5.32% base rate**,
+so the added rules carry signal rather than noise.
+
+The three rules still at zero on the test split are rare, not broken:
+`R005` fires 5 times corpus-wide at the highest lift in the set (11.28), `R012`
+17 times, and `R001` never — `gets()` was removed from C11 and does not appear
+in Big-Vul at all. It is kept because a scanner that misses it is broken.
+
+**Lift is not precision.** At a 5.32% base rate even lift 3.4 means roughly five
+in six hits are not on a function Big-Vul labels vulnerable. That is what Layers
+2 and 3 are for.
 
 Fast (~10 ms) but text-only — it can't tell a real call from one inside a
 comment or string.
@@ -126,6 +171,12 @@ Parses the code into a syntax tree and **validates** each Layer-1 hit:
   string, or character literal.
 
 This removes the most common false positives (comments, log messages, docs).
+
+Severity decides the gate: a `high` rule confirmed here fails CI on its own, so
+`high` is reserved for calls that are unsafe by construction (`gets`, `strcpy`,
+`sprintf`, a variable format string, `scanf("%s")`, spawning a shell). `medium`
+covers calls that are risky but often correct, and `low` needs context — both
+produce `needs_review` rather than blocking a merge.
 
 > **Caveat.** Big-Vul functions are extracted without their headers and type
 > definitions, so ~14% of them do not parse cleanly (measured: 68/500 sampled

@@ -6,7 +6,7 @@ import pytest
 
 from src.pipeline import analyze
 from src.pipeline.ast_layer import validate as ast_validate
-from src.pipeline.regex_layer import RULES, scan as regex_scan
+from src.pipeline.regex_layer import scan as regex_scan
 
 VULNERABLE_C = """
 #include <string.h>
@@ -35,17 +35,8 @@ void release(void *p) {
 
 
 class TestRegexLayer:
-    def test_rule_ids_are_unique(self):
-        ids = [r.rule_id for r in RULES]
-        assert len(ids) == len(set(ids))
-
-    def test_severities_are_known(self):
-        assert {r.severity for r in RULES} <= {"high", "medium", "low"}
-
-    def test_cwe_ids_are_well_formed(self):
-        for rule in RULES:
-            assert rule.cwe.startswith("CWE-"), rule.rule_id
-            assert rule.cwe.removeprefix("CWE-").isdigit(), rule.rule_id
+    """Behaviour of the scan itself. Per-rule coverage lives in
+    tests/test_regex_rules.py."""
 
     def test_flags_strcpy(self):
         findings = regex_scan(VULNERABLE_C)
