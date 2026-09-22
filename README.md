@@ -525,6 +525,29 @@ week if Colab keeps dropping you.
 
 ---
 
+## Evaluating a checkpoint
+
+Evaluation is pure inference — no gradients, no optimizer state — so it needs a
+fraction of training's memory and does not need Colab:
+
+```powershell
+python scripts\evaluate.py                       # torch, GPU if one is available
+python scripts\evaluate.py --backend onnx        # models/model.onnx, CPU only
+python scripts\evaluate.py --limit 2000          # quick sanity check
+python scripts\evaluate.py --data-dir data/processed_project
+```
+
+It sweeps the decision threshold on **validation only**, applies it unchanged
+to test, reports both splits at 0.5 and at the tuned value, and writes
+`models/graphcodebert_finetuned/metrics.json`.
+
+Measured throughput on this machine (batch 16, seq 512): ONNX INT8 on CPU runs
+at ~260 ms/function, so both splits (32,726 functions) take ~2.4 h; a small
+CUDA GPU does it in minutes, since inference needs roughly 1.5 GB rather than
+the ~4.7 GB training wants.
+
+---
+
 ## ONNX export
 
 `scripts/export_onnx.py` (Phase 6) converts the fine-tuned checkpoint into an
