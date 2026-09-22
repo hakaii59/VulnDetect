@@ -1,31 +1,41 @@
+# Full development environment: data pipeline, notebooks, training, export.
+# Pinned exactly for reproducibility — these are the versions the project was
+# built and verified with.
+#
+# Python >= 3.12 required (numpy 2.5.2 sets the floor).
+# For CI / inference only, use the much lighter requirements-ci.txt.
+
 # --- Core data handling ---
-pandas
-numpy
-scikit-learn
-pyyaml
-tqdm
+numpy==2.5.2
+pandas==3.0.5
+pyarrow==25.0.1          # parquet engine for data/processed/*.parquet
+scikit-learn==1.9.0
+pyyaml==6.0.3
+tqdm==4.70.0
 
 # --- Dataset loading (HuggingFace) ---
-datasets
-huggingface_hub
+datasets==5.0.1
+huggingface_hub==1.30.0
 
 # --- Layer 3: GraphCodeBERT fine-tuning ---
-transformers
-torch
-accelerate
+transformers==5.16.1
+tokenizers==0.23.2
+safetensors==0.8.0
+torch==2.14.0
+accelerate==1.14.0
 
 # --- Layer 2: AST parsing ---
-tree-sitter
-tree-sitter-cpp
+tree-sitter==0.26.0
+tree-sitter-cpp==0.23.4
 
 # --- Model export / fast inference ---
-onnx
-onnxruntime
+onnx==1.22.0
+onnxruntime==1.29.0
 
 # --- EDA / notebooks ---
-jupyter
-matplotlib
-seaborn
+jupyter==1.1.1
+matplotlib==3.11.1
+seaborn==0.13.2
 
 # --- Testing ---
-pytest
+pytest==9.1.1

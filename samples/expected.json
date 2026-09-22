@@ -1,0 +1,4 @@
+{
+  "sample_vulnerable.c": "vulnerable",
+  "sample_safe.c": "likely_safe"
+}

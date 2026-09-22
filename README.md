@@ -8,7 +8,7 @@ gets merged.
 > **Portfolio project** — built end-to-end from raw dataset to ONNX inference
 > and GitHub Actions, with every step documented and reproducible.
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/pytorch-2.x-ee4c2c)](https://pytorch.org/)
 [![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-HuggingFace-ffd21e)](https://huggingface.co/microsoft/graphcodebert-base)
 [![ONNX](https://img.shields.io/badge/ONNX-exported-005ced)](https://onnx.ai/)
@@ -72,12 +72,25 @@ vulnerabilities.
 
 ### Verdict logic
 
-| Layer 1+2 confirmed | P(vulnerable) ≥ 0.5 | Verdict        |
-|---------------------|---------------------|----------------|
-| ✅                  | ✅                  | `vulnerable`   |
-| ✅                  | ❌                  | `needs_review` |
-| ❌                  | ✅                  | `needs_review` |
-| ❌                  | ❌                  | `likely_safe`  |
+Layers 1–2 are **deterministic**: a confirmed finding means Tree-sitter proved
+there is a real call there, not a mention inside a comment or a string. Layer 3
+is a *corroborating* signal and is **optional** — the pipeline runs without it.
+
+| AST-confirmed finding | Model P(vulnerable) ≥ 0.5 | Verdict        |
+|-----------------------|---------------------------|----------------|
+| any `high` severity   | anything, or no model     | `vulnerable`   |
+| `medium`/`low` only   | ✅                        | `vulnerable`   |
+| `medium`/`low` only   | ❌, or no model           | `needs_review` |
+| none                  | ✅                        | `needs_review` |
+| none                  | ❌, or no model           | `likely_safe`  |
+
+> **Why a high-severity finding is not gated behind the model.** The classifier
+> is trained on Big-Vul CVE patches, so it under-fires badly on short,
+> out-of-distribution code: a textbook `strcpy` overflow scores
+> P(vulnerable) ≈ 0.001. Requiring model agreement therefore suppressed
+> AST-confirmed findings and left the CI gate unable to fire at all.
+> `python scripts/scan_samples.py selftest` guards against that regression on
+> every CI run.
 
 ---
 
@@ -114,6 +127,12 @@ Parses the code into a syntax tree and **validates** each Layer-1 hit:
 
 This removes the most common false positives (comments, log messages, docs).
 
+> **Caveat.** Big-Vul functions are extracted without their headers and type
+> definitions, so ~14% of them do not parse cleanly (measured: 68/500 sampled
+> test functions). When the tree has errors, this layer keeps every Layer-1
+> finding rather than silently dropping hits it cannot verify — on those
+> snippets the pipeline is effectively regex-only.
+
 ### Layer 3 — GraphCodeBERT (`src/pipeline/model_layer.py`)
 
 A `microsoft/graphcodebert-base` encoder with a 2-class head, fine-tuned on
@@ -124,7 +143,11 @@ A `microsoft/graphcodebert-base` encoder with a 2-class head, fine-tuned on
 - **`VulnClassifier`** — loads the PyTorch checkpoint directly (dev /
   fallback).
 
-`get_classifier()` picks ONNX when available, else PyTorch.
+`get_classifier()` picks ONNX when available, else the PyTorch checkpoint, and
+returns `None` when neither is present — Layer 3 is optional, so a fresh clone
+and a CI run with no model configured both still work in 2-layer mode. (Loading
+the *untrained* base model is now opt-in via `allow_untrained=True`: it produced
+meaningless probabilities that looked real.)
 
 ---
 
@@ -147,7 +170,8 @@ vulndetect-cpp/
 │   └── 03_finetune.ipynb         # Phase 4 — train GraphCodeBERT (Colab)
 ├── samples/
 │   ├── sample_vulnerable.c       # CI fixture — must be flagged
-│   └── sample_safe.c             # CI fixture — must pass
+│   ├── sample_safe.c             # CI fixture — must pass
+│   └── expected.json             # expected verdict per fixture (self-test)
 ├── scripts/
 │   ├── export_onnx.py            # Phase 6 — export + quantize + verify
 │   ├── fetch_model.py            # Phase 7 — fetch model on CI runner
@@ -160,9 +184,12 @@ vulndetect-cpp/
 │   │   └── model_layer.py        # Layer 3
 │   └── utils.py
 ├── tests/
+│   ├── conftest.py               # fixtures: no-model / stub-model pipelines
+│   ├── test_pipeline.py          # regex rules, AST validation, verdict logic
 │   └── test_scan_gate.py         # unit tests for the CI gate logic
 ├── requirements.txt              # full local/development deps
 ├── requirements-ci.txt           # light deps — ONNX inference + tree-sitter
+├── requirements-dev.txt          # requirements-ci.txt + pytest
 ├── requirements-fetch.txt        # heavy deps — only for HF model rebuild on CI
 └── README.md
 ```
@@ -172,7 +199,7 @@ vulndetect-cpp/
 ## Quick start
 
 ```powershell
-# 1. Create & activate a virtual environment (Python 3.10+)
+# 1. Create & activate a virtual environment (Python 3.12+)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1          # Windows PowerShell
 
@@ -189,9 +216,13 @@ python scripts\scan_samples.py scan samples
 > - a `models/model.onnx` produced by [Phase 6](#onnx-export), **or**
 > - a `models/graphcodebert_finetuned/` checkpoint produced by [Phase 4](#dataset).
 >
-> Without a model, the pipeline still runs Layers 1–2 and falls back to the
-> untrained base model for Layer 3 (with a loud warning) — handy for early
-> development.
+> Without a model the pipeline runs Layers 1–2 only and reports
+> `model_prediction = None`. That is a supported mode, not a degraded one: the
+> deterministic layers carry the gate on their own.
+
+> **Python 3.12+ is required.** The pinned `numpy==2.5.2` declares
+> `requires-python >= 3.12`, which sets the floor for the whole project. CI
+> runs 3.12; development was done on 3.14.
 
 ---
 
@@ -212,19 +243,34 @@ void copy(const char *input) {
 
 result = analyze(code)
 print(result.verdict)                 # 'vulnerable' | 'needs_review' | 'likely_safe'
+print(result.reason)                  # why that verdict was reached
+print(result.layers_run)              # ['regex', 'ast'] or ['regex', 'ast', 'model']
 print(result.confirmed_findings)      # regex findings that survived AST validation
-print(result.model_prediction)        # ModelPrediction(label=1, probability=0.97, ...)
+print(result.validated)               # every finding + its AST confirm/reject reason
+print(result.model_prediction)        # ModelPrediction(...), or None if no model
 ```
+
+`model_prediction` is `None` whenever Layer 3 has no trained model available,
+so check it before reading `.probability`. Use
+`from src.pipeline import model_available` to test for it up front.
 
 ### From the command line
 
 ```powershell
-# scan every C/C++ file in a folder (exit code 1 if any is 'vulnerable')
+# scan files and/or folders (exit code 1 if any file is 'vulnerable')
 python scripts\scan_samples.py scan path\to\code
+python scripts\scan_samples.py scan src\a.c src\b.cpp
 
 # machine-readable summary
 python scripts\scan_samples.py export path\to\code
+
+# prove the gate still discriminates (samples/ vs samples/expected.json)
+python scripts\scan_samples.py selftest
 ```
+
+A target may be a file or a directory; directories are walked recursively.
+CI passes the PR's changed files individually, and missing targets (files
+deleted in the PR) are skipped rather than failing the gate.
 
 ---
 
@@ -239,9 +285,11 @@ National Vulnerability Database, each labeled `vul ∈ {0, 1}`.
 1. **Language normalization** — raw labels `C`, `CPP`, `C++` are normalized and
    filtered to C / C++ only.
 2. **Cleaning** — strip whitespace, drop empty `func_before`.
-3. **Deduplication** — exact-duplicate `func_before` rows removed globally
-   (prevents the same function leaking from train into test).
+3. **Deduplication** — exact-duplicate `func_before` rows removed globally.
+   Note this only catches byte-identical functions; reindented near-duplicates
+   survive (1,430 remain inside `train` under whitespace-normalized hashing).
 4. **Stratified split** — 80/10/10 train/val/test, preserving the class ratio.
+   WARNING: **this split is row-wise, not commit-wise — see Results below.**
 5. **Class weights** — saved to `data/processed/class_weights.json` for
    weighted sampling (the `vul=1` class is ~17× rarer than `vul=0`).
 
@@ -265,7 +313,27 @@ National Vulnerability Database, each labeled `vul ∈ {0, 1}`.
 
 ## Results
 
-*Fill in after the Phase 4 training run completes.*
+> ### Known issue: the current split leaks, so these numbers are inflated
+>
+> Big-Vul rows are mined **per fix-commit**, and one commit contributes many
+> near-identical functions. `notebooks/02_preprocessing.ipynb` splits
+> **row-wise**, so the same commit lands in both train and test. Measured on
+> the current `data/processed/`:
+>
+> | Leakage check | Result |
+> |---|---|
+> | Test commits also present in train | **2,830 / 2,869 (98.6%)** |
+> | Functions shared train and test (whitespace-normalized) | 377 |
+> | Near-duplicate rows within train | 1,430 |
+>
+> Scoring the checkpoint on a balanced 40/40 test sample gives **F1 ~ 0.95,
+> ROC-AUC ~ 0.99** — far above published Big-Vul results (F1 ~ 0.3-0.6). That
+> gap is the leakage, not model quality, so the table below is deliberately
+> left empty rather than filled with numbers that will not survive scrutiny.
+>
+> **Fix in progress:** replace `train_test_split` with `GroupShuffleSplit`
+> grouped on `commit_id`, dedupe on whitespace-normalized hashes, retrain, and
+> report both validation **and test** metrics.
 
 | Metric | Value |
 |--------|-------|
@@ -306,42 +374,68 @@ The script:
 every push and pull request:
 
 ```text
-push / PR ──► compile-check ──► fetch-model ──► scan (the gate)
+compile-check   byte-compiles every .py file
+tests           pytest over tests/  (no model, no network)
+fetch-model     OPTIONAL - only when a model source is configured
+      |
+      v
+scan            self-test the gate, then scan the changed C/C++ files
 ```
 
 - **compile-check** — byte-compiles every Python file.
-- **fetch-model** — makes the ONNX model + tokenizer available on the runner
-  (cache → `CI_MODEL_URL` → rebuild from HuggingFace).
-- **scan** — runs the full 3-layer pipeline over `samples/` and **fails the
-  build if any file is flagged `vulnerable`**, uploading the report as an
-  artifact on failure.
+- **tests** — runs the full `pytest` suite.
+- **fetch-model** — *skipped unless configured.* Downloads or rebuilds
+  `model.onnx` **and its tokenizer**, caches it, and publishes `models/` as a
+  workflow artifact.
+- **scan** — runs `selftest` first to prove the gate can still tell
+  `sample_vulnerable.c` from `sample_safe.c`, then scans the C/C++ files this
+  push/PR actually changed and **fails the build on a `vulnerable` verdict**.
 
-### Making the model available in CI
+Three deliberate choices here:
 
-Because `models/*` is git-ignored, the runner has three ways to get the model,
-tried in order:
+1. **The gate scans changed files, not `samples/`.** `samples/` contains a
+   deliberately vulnerable fixture, so gating on it would paint the badge
+   permanently red. The fixtures are covered by `selftest` instead, which
+   asserts the *expected* verdict for each one.
+2. **`selftest` runs before the gate.** A gate that can never fire is worse
+   than no gate; this is the check that catches that failure mode.
+3. **Layer 3 is optional.** With no model configured, `fetch-model` is skipped
+   and `scan` runs in 2-layer mode, so the workflow is green on a fresh clone
+   with zero setup.
 
-| Mechanism | Setup | Notes |
-|-----------|-------|-------|
-| **Actions cache** | none (automatic) | built once, then restored in seconds |
-| **`CI_MODEL_URL`** | set a repo *Variable* | fastest & most deterministic |
-| **HuggingFace rebuild** | none | heaviest fallback path |
+### Enabling Layer 3 in CI
 
-For a portfolio repo the recommended approach is to upload `model.onnx` to a
-GitHub Release and set the repository variable `CI_MODEL_URL` to its raw URL
-(*Settings → Secrets and variables → Actions → Variables*).
+`models/*` is git-ignored (the ONNX model is ~125 MB), so set **one** repository
+variable under *Settings → Secrets and variables → Actions → Variables*:
+
+| Variable | Setup | Notes |
+|----------|-------|-------|
+| **`CI_MODEL_URL`** | direct URL to your INT8 `model.onnx` (e.g. a GitHub Release asset) | **Recommended.** Downloads ~125 MB, no torch install. |
+| **`HF_MODEL_REPO`** | Hub repo holding your fine-tuned checkpoint | CI installs torch and rebuilds the INT8 ONNX on the runner. Slowest path. |
+
+Either result is stored in the Actions cache, so later runs skip the work.
+Set neither and CI simply runs the deterministic layers.
 
 ---
 
 ## Tests
 
 ```powershell
+python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
 
-`tests/test_scan_gate.py` unit-tests the CI gate logic (with a fake `analyze`
-so no model/network is required): a vulnerable file must fail the scan, a safe
-file must pass, and the JSON export must be serializable.
+No test needs a model, a GPU, or the network — Layer 3 is stubbed via fixtures
+in `tests/conftest.py`, so the suite runs anywhere `requirements-ci.txt` installs.
+
+| File | Covers |
+|------|--------|
+| `tests/test_pipeline.py` | regex rule hygiene (unique IDs, well-formed CWE IDs), AST confirm/reject behaviour, parse-error fallback, and the full verdict table in both 2-layer and 3-layer mode |
+| `tests/test_scan_gate.py` | the CI gate: exit 1 on `vulnerable`, exit 0 on safe, explicit file targets, deleted targets, JSON export, and a live `selftest` against `samples/` |
+
+The regression that made the gate unfireable (a high-severity AST-confirmed
+finding suppressed by a low model score) has a dedicated test, as does the
+`samples/expected.json` ↔ `samples/` sync.
 
 ---
 
@@ -354,6 +448,14 @@ file must pass, and the JSON export must be serializable.
 - **Regex rules are a fixed, curated set** — they cover common CWE patterns but
   not every possible vulnerability class.
 - **Labels inherit Big-Vul's noise** — commit-based labels can be imperfect.
+- **Layer 2 cannot validate every snippet** — ~14% of Big-Vul functions do not
+  parse cleanly without their headers; on those the pipeline is regex-only.
+- **Layer 3 does not generalize to short, synthetic code** — trained on
+  real-world CVE patches, it scores a textbook `strcpy` overflow at
+  P(vulnerable) ≈ 0.001. This is why high-severity findings are not gated
+  behind it.
+- **The current train/test split leaks** (see [Results](#results)); the reported
+  metrics are intentionally blank until it is fixed and the model is retrained.
 - The bundled ONNX model is **not** a production security product; it is an
   educational pipeline and a *signal*, not a proof of safety.
 

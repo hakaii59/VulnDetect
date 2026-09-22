@@ -1,0 +1,5 @@
+# CI runtime plus the test tooling. Used by the `tests` job and for local
+# development when you only want to run the pipeline and its tests.
+-r requirements-ci.txt
+
+pytest==9.1.1

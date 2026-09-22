@@ -1,13 +1,17 @@
-# Runtime deps for CI scanning (Layer 2 + Layer 3-ONNX only).
-# Deliberately does NOT include torch / onnx: the INT8 ONNX model runs through
-# onnxruntime, so CI stays fast and light.
+# Light runtime for CI scanning: Layer 1 (regex) + Layer 2 (AST) + Layer 3 via
+# ONNX Runtime. Deliberately NO torch and NO onnx — the INT8 model.onnx runs
+# through onnxruntime alone, which keeps the scan job small and fast.
 #
-# transformers + tokenizers are needed only to instantiate the tokenizer
+# transformers + tokenizers are here only to build the tokenizer
 # (AutoTokenizer.from_pretrained) from models/graphcodebert_finetuned/.
-onnxruntime>=1.17
-numpy>=1.24
-transformers>=4.41
-tokenizers>=0.19
-huggingface_hub>=0.23
-tree-sitter>=0.21
-tree-sitter-cpp>=0.22
+#
+# Versions are pinned exactly so a CI run is reproducible. numpy 2.5.2 requires
+# Python >= 3.12, which sets the project's Python floor.
+numpy==2.5.2
+onnxruntime==1.29.0
+transformers==5.16.1
+tokenizers==0.23.2
+huggingface_hub==1.30.0
+safetensors==0.8.0
+tree-sitter==0.26.0
+tree-sitter-cpp==0.23.4
