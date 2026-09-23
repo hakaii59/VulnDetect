@@ -29,7 +29,10 @@ What it does
 2. normalize `lang` and keep C / C++ only
 3. strip whitespace, drop empty functions
 4. deduplicate on a **whitespace-normalized** hash, so functions that differ
-   only in formatting collapse (exact-string dedup missed ~24% of these)
+   only in formatting collapse. Removes 53,371 rows (24.6%); exact-string
+   dedup would catch 51,572 of them, normalizing catches 1,799 more. Those
+   1,799 are the ones that matter: each pair spans two different commits, so
+   the commit-grouped split would otherwise put them on opposite sides.
 5. split 80/10/10 with `StratifiedGroupKFold` grouped on `commit_id`, which
    keeps every commit wholly inside one split while balancing the label rate
 6. **assert** zero commit overlap and zero code overlap between splits, so a

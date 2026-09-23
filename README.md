@@ -365,8 +365,11 @@ official split, but they are honest.
 2. **Cleaning** — strip whitespace, drop empty `func_before` and rows with no
    `commit_id`.
 3. **Deduplication** — on a **whitespace-normalized** hash, so functions that
-   differ only in formatting collapse. This removes 53,371 rows (24.6%) that
-   exact-string dedup missed.
+   differ only in formatting collapse. This removes 53,371 rows (24.6%).
+   Exact-string dedup would already catch 51,572 of those; normalizing
+   whitespace first catches **1,799 more**. Small, but they matter: a pair that
+   survives here sits in two *different* commits, so the commit-grouped split
+   would place them on opposite sides and reintroduce leakage.
 4. **Grouped, stratified split** — `StratifiedGroupKFold` on `commit_id`,
    80/10/10. Every commit stays wholly inside one split while the vulnerable
    rate stays constant across all three.
