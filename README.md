@@ -684,4 +684,16 @@ finding suppressed by a low model score) has a dedicated test, as does the
 ---
 
 ## License
-The Big-Vul dataset and the GraphCodeBERT checkpoint are subject to their own
+
+This project's code is released under the [MIT License](./LICENSE).
+
+The inputs it builds on carry their own terms, which MIT does not override:
+
+| Component | Terms |
+|-----------|-------|
+| [Big-Vul](https://huggingface.co/datasets/benjis/bigvul) dataset | see the dataset card; functions are mined from public CVE fix commits and each retains its original project's license |
+| [`microsoft/graphcodebert-base`](https://huggingface.co/microsoft/graphcodebert-base) | MIT |
+| Fine-tuned checkpoint in `models/` | derived from the two above; not redistributed in this repo (git-ignored) |
+
+Neither the model nor the pipeline is a production security product. See
+[Limitations](#limitations).
